@@ -1052,6 +1052,7 @@ function Invoke-SetupAsSystem {
     } else {
         $commandLine = ('cmd.exe /c "{0}" {1}' -f $Executable, $argumentString)
     }
+    $commandLine = "cmd.exe /c \"\"$Executable\" $argumentString\""
 
     try {
         schtasks.exe /End /TN $TaskName /F > $null 2>&1
