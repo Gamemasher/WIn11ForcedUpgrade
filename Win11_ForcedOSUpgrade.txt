@@ -651,6 +651,64 @@ function Write-ProgressLog {
     Add-Content -Path $logFile -Value $logMessage
 }
 
+function Invoke-SetupAsSystem {
+    param (
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [string]$TaskName = 'Win11_24H2 Forced Upgrade'
+    )
+
+    $startTime = (Get-Date).AddMinutes(1)
+    $startTimeString = $startTime.ToString('HH:mm')
+    $startDateString = $startTime.ToString('MM/dd/yyyy')
+
+    $escapedArguments = $Arguments | ForEach-Object {
+        $arg = $_ -replace '"', '""'
+        if ($arg -match '\s') {
+            '"' + $arg + '"'
+        } else {
+            $arg
+        }
+    }
+
+    $argumentString = ($escapedArguments -join ' ')
+    $commandLine = "cmd.exe /c `"`"$Executable`" $argumentString`""
+
+    try {
+        schtasks.exe /End /TN $TaskName /F > $null 2>&1
+    } catch {
+        # Ignore if the task is not currently running
+    }
+
+    try {
+        schtasks.exe /Delete /TN $TaskName /F > $null 2>&1
+    } catch {
+        # Ignore if the task does not exist
+    }
+
+    $createArgs = @(
+        '/Create','/F','/SC','ONCE','/TN',$TaskName,
+        '/TR',$commandLine,
+        '/ST',$startTimeString,
+        '/SD',$startDateString,
+        '/RL','HIGHEST','/RU','SYSTEM'
+    )
+
+    $createProcess = Start-Process -FilePath 'schtasks.exe' -ArgumentList $createArgs -Wait -NoNewWindow -PassThru
+    if ($createProcess.ExitCode -ne 0) {
+        throw "Failed to create SYSTEM scheduled task for setup.exe (exit code $($createProcess.ExitCode))."
+    }
+
+    $runArgs = @('/Run','/TN',$TaskName)
+    $runProcess = Start-Process -FilePath 'schtasks.exe' -ArgumentList $runArgs -Wait -NoNewWindow -PassThru
+    if ($runProcess.ExitCode -ne 0) {
+        throw "Failed to launch setup.exe via scheduled task (exit code $($runProcess.ExitCode))."
+    }
+
+    Start-Sleep -Seconds 5
+
+    return @{ TaskName = $TaskName; CommandLine = $commandLine }
+}
 # Function to check if Windows Setup is running
 function Is-SetupRunning {
     $setupProcesses = @(
@@ -1023,69 +1081,4 @@ if ($setupHost) {
         Write-ProgressLog "Check C:\$WINDOWS.~BT\Sources\Panther directory for setupact.log and setuperr.log files"
         Write-ProgressLog "You may need to run the script again or try a different approach."
     }
-}
-
-# Launch setup.exe through a SYSTEM scheduled task to guarantee firmware/BCD access
-function Invoke-SetupAsSystem {
-    param (
-        [Parameter(Mandatory = $true)][string]$Executable,
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [string]$TaskName = 'Win11_24H2 Forced Upgrade'
-    )
-
-    $startTime = (Get-Date).AddMinutes(1)
-    $startTimeString = $startTime.ToString('HH:mm')
-    $startDateString = $startTime.ToString('MM/dd/yyyy')
-
-    $escapedArguments = $Arguments | ForEach-Object {
-        $arg = $_ -replace '"', '""'
-        if ($arg -match '\s') {
-            '"' + $arg + '"'
-        } else {
-            $arg
-        }
-    }
-
-    $argumentString = ($escapedArguments -join ' ')
-    if ([string]::IsNullOrWhiteSpace($argumentString)) {
-        $commandLine = ('cmd.exe /c "{0}"' -f $Executable)
-    } else {
-        $commandLine = ('cmd.exe /c "{0}" {1}' -f $Executable, $argumentString)
-    }
-    $commandLine = "cmd.exe /c \"\"$Executable\" $argumentString\""
-
-    try {
-        schtasks.exe /End /TN $TaskName /F > $null 2>&1
-    } catch {
-        # Ignore if the task is not currently running
-    }
-
-    try {
-        schtasks.exe /Delete /TN $TaskName /F > $null 2>&1
-    } catch {
-        # Ignore if the task does not exist
-    }
-
-    $createArgs = @(
-        '/Create','/F','/SC','ONCE','/TN',$TaskName,
-        '/TR',$commandLine,
-        '/ST',$startTimeString,
-        '/SD',$startDateString,
-        '/RL','HIGHEST','/RU','SYSTEM'
-    )
-
-    $createProcess = Start-Process -FilePath 'schtasks.exe' -ArgumentList $createArgs -Wait -NoNewWindow -PassThru
-    if ($createProcess.ExitCode -ne 0) {
-        throw "Failed to create SYSTEM scheduled task for setup.exe (exit code $($createProcess.ExitCode))."
-    }
-
-    $runArgs = @('/Run','/TN',$TaskName)
-    $runProcess = Start-Process -FilePath 'schtasks.exe' -ArgumentList $runArgs -Wait -NoNewWindow -PassThru
-    if ($runProcess.ExitCode -ne 0) {
-        throw "Failed to launch setup.exe via scheduled task (exit code $($runProcess.ExitCode))."
-    }
-
-    Start-Sleep -Seconds 5
-
-    return @{ TaskName = $TaskName; CommandLine = $commandLine }
 }
