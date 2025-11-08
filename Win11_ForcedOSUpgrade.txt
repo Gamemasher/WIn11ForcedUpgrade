@@ -39,6 +39,9 @@ $WORKING_DIR = "C:\DND\Win11_Upgrade\Working"   # extraction target (safe to wip
 $LOG_FILE    = "C:\DND\Win11_Upgrade\Logs\Forced_24H2_Upgrade.log"
 $MONITOR_LOG = "C:\DND\Win11_Upgrade\Logs\Forced_24H2_UpgradeMonitor.log"
 
+# Target release version used for Windows Update policies and dynamic update alignment
+$TARGET_RELEASE_VERSION = "24H2"
+
 
 
 # BEHAVIOR SETTINGS
@@ -93,56 +96,100 @@ if (-not $BYPASS_CONFIRMATION) {
     Write-Host "Confirmation bypassed. Proceeding with Windows 11 upgrade automatically..." -ForegroundColor Yellow
 }
 
+# Helper function to create or update registry values reliably
+function Set-RegistryValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)]$Value,
+        [Microsoft.Win32.RegistryValueKind]$Type = [Microsoft.Win32.RegistryValueKind]::DWord
+    )
+
+    try {
+        if (-not (Test-Path -Path $Path)) {
+            New-Item -Path $Path -Force | Out-Null
+        }
+
+        $propertyType = switch ($Type) {
+            ([Microsoft.Win32.RegistryValueKind]::String) { 'String' }
+            ([Microsoft.Win32.RegistryValueKind]::MultiString) { 'MultiString' }
+            ([Microsoft.Win32.RegistryValueKind]::Binary) { 'Binary' }
+            ([Microsoft.Win32.RegistryValueKind]::QWord) { 'QWord' }
+            default { 'DWord' }
+        }
+
+        if ((Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue) -eq $null) {
+            New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $propertyType -Force | Out-Null
+        } else {
+            Set-ItemProperty -Path $Path -Name $Name -Value $Value -Force
+        }
+
+        $current = (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name
+        $expected = switch ($Type) {
+            ([Microsoft.Win32.RegistryValueKind]::DWord) { [int]$Value }
+            ([Microsoft.Win32.RegistryValueKind]::QWord) { [long]$Value }
+            default { $Value }
+        }
+
+        if ($current -ne $expected) {
+            throw "Verification failed. Expected $expected but found $current."
+        }
+    } catch {
+        Write-Host "ERROR: Failed to set registry value $Path\\$Name - $_" -ForegroundColor Red
+        throw
+    }
+}
+
 # Set aggressive compatibility bypass registry keys
 Write-Host "Setting comprehensive compatibility bypass registry keys..."
 
 # CRITICAL FIX: Disable Setup360 mitigation BEFORE any setup processes start
 # These keys MUST exist before setup.exe launches to prevent 0x80070522 RegBackup errors
 Write-Host "Disabling Setup360 mitigation to prevent RegBackup access denied errors..."
-reg add "HKLM\SYSTEM\Setup\MoSetup" /f /v DisableMitigation /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\MoSetup" /f /v Skip360 /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\MoSetup" /f /v SkipMitigationEvaluation /d 1 /t reg_dword
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\MoSetup' -Name 'DisableMitigation' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\MoSetup' -Name 'Skip360' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\MoSetup' -Name 'SkipMitigationEvaluation' -Value 1
 Write-Host "Setup360 mitigation disabled" -ForegroundColor Green
 
 # TPM and basic hardware checks
-reg add "HKLM\SYSTEM\Setup\MoSetup" /f /v AllowUpgradesWithUnsupportedTPMorCPU /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\LabConfig" /f /v BypassTPMCheck /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\LabConfig" /f /v BypassSecureBootCheck /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\LabConfig" /f /v BypassRAMCheck /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\LabConfig" /f /v BypassStorageCheck /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\LabConfig" /f /v BypassCPUCheck /d 1 /t reg_dword
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\MoSetup' -Name 'AllowUpgradesWithUnsupportedTPMorCPU' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\LabConfig' -Name 'BypassTPMCheck' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\LabConfig' -Name 'BypassSecureBootCheck' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\LabConfig' -Name 'BypassRAMCheck' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\LabConfig' -Name 'BypassStorageCheck' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\LabConfig' -Name 'BypassCPUCheck' -Value 1
 
 # Safeguard overrides
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /f /v DisableWUfBSafeguards /d 1 /t reg_dword
-reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\UpdatePolicy\Settings" /f /v DisableWUfBSafeguards /d 1 /t reg_dword
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /f /v DisableSafeguards /d 1 /t reg_dword
+Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -Name 'DisableWUfBSafeguards' -Value 1
+Set-RegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\UpdatePolicy\Settings' -Name 'DisableWUfBSafeguards' -Value 1
+Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -Name 'DisableSafeguards' -Value 1
 
 # Setup compatibility settings
-reg add "HKLM\SYSTEM\Setup\UpgradeCompat" /f /v IgnoreAllWarnings /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\UpgradeCompat" /f /v IgnoreHWRequirements /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\UpgradeCompat" /f /v IgnoreApplicationsOnUpgrade /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\UpgradeCompat" /f /v IgnoreAppsOnUpgrade /d 1 /t reg_dword
-reg add "HKLM\SYSTEM\Setup\Status\UninstallWindow" /f /v UninstallActive /d 0 /t reg_dword
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\UpgradeCompat' -Name 'IgnoreAllWarnings' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\UpgradeCompat' -Name 'IgnoreHWRequirements' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\UpgradeCompat' -Name 'IgnoreApplicationsOnUpgrade' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\UpgradeCompat' -Name 'IgnoreAppsOnUpgrade' -Value 1
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup\Status\UninstallWindow' -Name 'UninstallActive' -Value 0
 
 # Disable compatibility checks
-reg add "HKLM\SYSTEM\Setup" /f /v BypassCompatibilityCheck /d 1 /t reg_dword
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup' -Name 'BypassCompatibilityCheck' -Value 1
 
 # Disable error reporting during upgrade
-reg add "HKLM\SOFTWARE\Microsoft\PCHealth\ErrorReporting" /f /v DoReport /d 0 /t reg_dword
-reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting" /f /v Disabled /d 1 /t reg_dword
+Set-RegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\PCHealth\ErrorReporting' -Name 'DoReport' -Value 0
+Set-RegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting' -Name 'Disabled' -Value 1
 
 # Skip setup compliance checks
-reg add "HKLM\SYSTEM\Setup" /f /v BypassComplianceCheck /d 1 /t reg_dword
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup' -Name 'BypassComplianceCheck' -Value 1
 
 # Allow setup to continue despite errors
-reg add "HKLM\SYSTEM\Setup" /f /v AllowNonZeroExitStatus /d 1 /t reg_dword
+Set-RegistryValue -Path 'HKLM:\SYSTEM\Setup' -Name 'AllowNonZeroExitStatus' -Value 1
 
 # Disable CEIP during setup
-reg add "HKLM\SOFTWARE\Policies\Microsoft\SQMClient\Windows" /f /v CEIPEnable /d 0 /t reg_dword
+Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\SQMClient\Windows' -Name 'CEIPEnable' -Value 0
 
 # Force target platform version
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /f /v TargetReleaseVersion /d 1 /t reg_dword
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /f /v TargetReleaseVersionInfo /d "25H1" /t reg_sz
+Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -Name 'TargetReleaseVersion' -Value 1
+Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -Name 'TargetReleaseVersionInfo' -Value $TARGET_RELEASE_VERSION -Type ([Microsoft.Win32.RegistryValueKind]::String)
 
 # Function to validate URL - ensures the URL is reachable before download
 function Test-UrlIsValid {
@@ -428,17 +475,16 @@ try {
 
     Write-Host "ISO extracted successfully to $extractDir" -ForegroundColor Green
 
-    # Create zero-byte appraiserres.dll to bypass TPM check
-    Write-Host "Creating TPM check bypass..."
+    # Preserve appraiserres.dll so LoadLibrary succeeds while keeping bypass keys active
+    Write-Host "Preserving appraiserres.dll to avoid appraiser initialization failures..."
     $appraiserdllPath = "$extractDir\sources\appraiserres.dll"
     if (Test-Path $appraiserdllPath) {
-        # Make a backup just in case
-        Copy-Item -Path $appraiserdllPath -Destination "$appraiserdllPath.bak" -Force
-        # Replace with zero-byte file
-        Set-Content -Path $appraiserdllPath -Value "" -Force
+        if (-not (Test-Path "$appraiserdllPath.bak")) {
+            Copy-Item -Path $appraiserdllPath -Destination "$appraiserdllPath.bak" -Force
+        }
+        Write-Host "appraiserres.dll kept intact. Registry-based bypasses will handle unsupported hardware." -ForegroundColor Green
     } else {
-        # Create new zero-byte file if it doesn't exist
-        New-Item -Path $appraiserdllPath -ItemType File -Force | Out-Null
+        Write-Host "WARNING: appraiserres.dll not found after extraction. Setup may have unexpected behavior." -ForegroundColor Yellow
     }
 
     # Create EI.cfg to avoid product key prompts
@@ -576,10 +622,11 @@ PreinstallKitSpace=8000
         "/telemetry", "disable",
         "/dynamicupdate", "enable",
         "/eula", "accept",
-        "/unattend:$answerFilePath",
-        "/product", "server",  # Add server product parameter to bypass hardware checks
-        "/pkey", "VK7JG-NPHTM-C97JM-9MPGT-3V66T"  # Generic Windows 11 Pro key
+        "/unattend:$answerFilePath"
     )
+
+    # Allow setup to detect the appropriate edition (Windows 11 Pro when upgrading from Windows 10 Pro)
+    # so the existing digital license remains valid without injecting a mismatched product key.
 
     # Add /noreboot switch if automatic reboots are disabled
     if (-not $ALLOW_AUTOMATIC_REBOOT) {
@@ -685,12 +732,14 @@ Start-Sleep -Seconds 3
 Start-Sleep -Seconds 2
 Write-ProgressLog "Registry flushed. Mitigation disable keys are now available to Setup."
 
-# Start the setup process
-Write-ProgressLog "Launching setup.exe with arguments: $($arguments -join ' ')"
-$process = Start-Process -FilePath $setupPath -ArgumentList $arguments -PassThru -NoNewWindow
+# Start the setup process elevated to SYSTEM
+Write-ProgressLog "Launching setup.exe as SYSTEM with arguments: $($arguments -join ' ')"
+$launchInfo = Invoke-SetupAsSystem -Executable $setupPath -Arguments $arguments
+Write-ProgressLog "SYSTEM scheduled task $($launchInfo.TaskName) created for setup.exe."
+Write-ProgressLog "Task command line: $($launchInfo.CommandLine)"
 
 # Wait briefly to see if initial processes start
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 10
 
 # Check if setup is running and log process ID
 $setupStatus = Is-SetupRunning
@@ -723,7 +772,17 @@ if ($setupStatus.Success) {
     Write-ProgressLog "To check if it's running, use Task Manager to look for SetupHost.exe."
 } else {
     Write-ProgressLog "Warning: Setup may not have started correctly."
-    Write-ProgressLog "Checking exit code: $($process.ExitCode)"
+
+    try {
+        $taskStatus = schtasks.exe /Query /TN $launchInfo.TaskName /FO LIST /V 2>$null
+        if ($taskStatus) {
+            ($taskStatus -split "`r?`n") | Where-Object { $_ -match 'Status' -or $_ -match 'Last Run Result' } | ForEach-Object {
+                Write-ProgressLog "Scheduled task info: $_"
+            }
+        }
+    } catch {
+        Write-ProgressLog "Could not query scheduled task state: $_"
+    }
 
         # Try alternative approach - direct setupprep.exe execution with Server trick
         Write-ProgressLog "Trying alternative approach with setupprep.exe and Server trick..."
@@ -739,8 +798,10 @@ if ($setupStatus.Success) {
             Write-ProgressLog "Copying setup files to Windows.~BT directory..."
             Copy-Item -Path "$extractDir\sources\*" -Destination $btDir -Force -Recurse
 
-            # Create zero-byte appraiserres.dll in Windows.~BT
-            Set-Content -Path "$btDir\appraiserres.dll" -Value "" -Force
+            # Ensure appraiserres.dll remains intact to avoid LoadLibrary failures
+            if (-not (Test-Path "$btDir\appraiserres.dll")) {
+                Copy-Item -Path "$extractDir\sources\appraiserres.dll" -Destination "$btDir\appraiserres.dll" -Force -ErrorAction SilentlyContinue
+            }
 
             # Add additional bypass files
             Set-Content -Path "$btDir\Skip.cmd" -Value @"
@@ -768,7 +829,8 @@ Windows Registry Editor Version 5.00
             # Create batch file to run registry changes and launch setup
             $setupBatchPath = "$btDir\RunSetup.cmd"
 
-            $setupCommand = "setupprep.exe /product server /auto upgrade /quiet /compat ignorewarning /migratedrivers all /dynamicupdate enable /eula accept"
+            # Use the native upgrade flow so setup keeps the Professional edition and existing activation
+            $setupCommand = "setupprep.exe /auto upgrade /quiet /compat ignorewarning /migratedrivers all /dynamicupdate enable /eula accept"
 
             # Add noreboot switch if automatic reboots are disabled
             if (-not $ALLOW_AUTOMATIC_REBOOT) {
@@ -784,12 +846,19 @@ $setupCommand
 "@
             Set-Content -Path $setupBatchPath -Value $setupBatch -Force
 
-            # Run the batch file to execute setup with all bypasses
-            Write-ProgressLog "Launching setup with all compatibility bypasses..."
-            Start-Process -FilePath "cmd.exe" -ArgumentList "/c $setupBatchPath" -PassThru -NoNewWindow
+            # Run the batch file to execute setup with all bypasses using SYSTEM privileges
+            Write-ProgressLog "Launching setup with all compatibility bypasses via SYSTEM scheduled task..."
+            try {
+                $fallbackLaunch = Invoke-SetupAsSystem -Executable "$env:SystemRoot\System32\cmd.exe" -Arguments @('/c', $setupBatchPath) -TaskName 'Win11_24H2 Forced Upgrade Fallback'
+                Write-ProgressLog "Fallback task $($fallbackLaunch.TaskName) triggered with command: $($fallbackLaunch.CommandLine)"
+            } catch {
+                Write-ProgressLog "Failed to schedule fallback setup as SYSTEM: $_"
+                Write-ProgressLog "Attempting to launch fallback setup in current context..."
+                Start-Process -FilePath "cmd.exe" -ArgumentList "/c $setupBatchPath" -PassThru -NoNewWindow | Out-Null
+            }
 
             # Wait briefly to check if it started
-            Start-Sleep -Seconds 5
+            Start-Sleep -Seconds 10
 
             # Check again if setup is running
             $setupStatus = Is-SetupRunning
@@ -954,4 +1023,64 @@ if ($setupHost) {
         Write-ProgressLog "Check C:\$WINDOWS.~BT\Sources\Panther directory for setupact.log and setuperr.log files"
         Write-ProgressLog "You may need to run the script again or try a different approach."
     }
+}
+
+# Launch setup.exe through a SYSTEM scheduled task to guarantee firmware/BCD access
+function Invoke-SetupAsSystem {
+    param (
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [string]$TaskName = 'Win11_24H2 Forced Upgrade'
+    )
+
+    $startTime = (Get-Date).AddMinutes(1)
+    $startTimeString = $startTime.ToString('HH:mm')
+    $startDateString = $startTime.ToString('MM/dd/yyyy')
+
+    $escapedArguments = $Arguments | ForEach-Object {
+        $arg = $_ -replace '"', '""'
+        if ($arg -match '\s') {
+            '"' + $arg + '"'
+        } else {
+            $arg
+        }
+    }
+
+    $argumentString = ($escapedArguments -join ' ')
+    $commandLine = "cmd.exe /c `"$Executable`" $argumentString"
+
+    try {
+        schtasks.exe /End /TN $TaskName /F > $null 2>&1
+    } catch {
+        # Ignore if the task is not currently running
+    }
+
+    try {
+        schtasks.exe /Delete /TN $TaskName /F > $null 2>&1
+    } catch {
+        # Ignore if the task does not exist
+    }
+
+    $createArgs = @(
+        '/Create','/F','/SC','ONCE','/TN',$TaskName,
+        '/TR',$commandLine,
+        '/ST',$startTimeString,
+        '/SD',$startDateString,
+        '/RL','HIGHEST','/RU','SYSTEM'
+    )
+
+    $createProcess = Start-Process -FilePath 'schtasks.exe' -ArgumentList $createArgs -Wait -NoNewWindow -PassThru
+    if ($createProcess.ExitCode -ne 0) {
+        throw "Failed to create SYSTEM scheduled task for setup.exe (exit code $($createProcess.ExitCode))."
+    }
+
+    $runArgs = @('/Run','/TN',$TaskName)
+    $runProcess = Start-Process -FilePath 'schtasks.exe' -ArgumentList $runArgs -Wait -NoNewWindow -PassThru
+    if ($runProcess.ExitCode -ne 0) {
+        throw "Failed to launch setup.exe via scheduled task (exit code $($runProcess.ExitCode))."
+    }
+
+    Start-Sleep -Seconds 5
+
+    return @{ TaskName = $TaskName; CommandLine = $commandLine }
 }
