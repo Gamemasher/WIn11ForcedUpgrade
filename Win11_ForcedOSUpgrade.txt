@@ -1047,7 +1047,7 @@ function Invoke-SetupAsSystem {
     }
 
     $argumentString = ($escapedArguments -join ' ')
-    $commandLine = "cmd.exe /c `"$Executable`" $argumentString"
+    $commandLine = "cmd.exe /c \"\"$Executable\" $argumentString\""
 
     try {
         schtasks.exe /End /TN $TaskName /F > $null 2>&1
